@@ -17,17 +17,83 @@ Replace this paragraph with your own summary of what your version does.
 
 ## How The System Works
 
-Explain your design in plain language.
+### Song Features
 
-Some prompts to answer:
+Each `Song` in `data/songs.csv` carries ten attributes used during scoring:
 
-- What features does each `Song` use in your system
-  - For example: genre, mood, energy, tempo
-- What information does your `UserProfile` store
-- How does your `Recommender` compute a score for each song
-- How do you choose which songs to recommend
+| Feature | Type | Role |
+|---|---|---|
+| `genre` | categorical | matched against the user's preferred genre |
+| `mood` | categorical | matched against the user's preferred mood |
+| `energy` | 0.0 – 1.0 | proximity compared to the user's target energy |
+| `danceability` | 0.0 – 1.0 | proximity compared to the user's target danceability |
+| `acousticness` | 0.0 – 1.0 | proximity compared to the user's target acousticness |
+| `tempo_bpm` | integer | stored for future use / display |
+| `valence` | 0.0 – 1.0 | stored for future use / display |
 
-You can include a simple diagram or bullet list if helpful.
+### User Profile
+
+A `UserProfile` stores what the listener cares about most:
+
+- `favorite_genre` — the genre they most identify with
+- `favorite_mood` — the emotional feel they are looking for
+- `target_energy` — how high-energy the music should feel (0 = very calm, 1 = very intense)
+- `target_danceability` — how beat-driven the music should be
+- `target_acousticness` — preference for organic/live sound vs. electronic production
+
+### Algorithm Recipe
+
+Every song is scored by `score_song()` using the following point-weighting system:
+
+```
++2.0 pts   Genre match          (binary — song.genre == user.favorite_genre)
++1.0 pts   Mood match           (binary — song.mood  == user.favorite_mood)
++1.5 pts   Energy proximity     (continuous — 1.5 × (1 − |song.energy − target|))
++0.5 pts   Danceability proximity (continuous — 0.5 × (1 − |song.danceability − target|))
++0.5 pts   Acousticness proximity (continuous — 0.5 × (1 − |song.acousticness − target|))
+────────────────────────────────────────────────────────────────
+Max score  5.5 pts
+```
+
+**Why these weights?**
+Genre (2.0) is the heaviest signal because listeners strongly self-identify with a genre.
+Mood (1.0) matters but is softer — a "chill" lofi track can serve a "focused" listener too.
+Energy (1.5) is the dominant continuous feature; it separates a workout playlist from a study playlist.
+Danceability and acousticness (0.5 each) act as tie-breakers that add texture without overriding the primary signals.
+
+### Ranking Rule
+
+`recommend_songs()` collects `(song, score, explanation)` for every song in the catalog, sorts the list by score in descending order, and returns the top-k results (default k = 5). Each result includes a plain-language explanation string so the reason for every recommendation is transparent.
+
+### Data Flow
+
+```
+Input (User prefs)
+        │
+        ▼
+load_songs() ── songs.csv ──► list of song dicts
+        │
+        ▼
+Loop: for each song ──► score_song() ──► (score, reasons)
+        │                                      │
+        └──────────── accumulate ──────────────┘
+                            │
+                            ▼
+                    sort descending by score
+                            │
+                            ▼
+                    slice top-k results
+                            │
+                            ▼
+              Output (ranked recommendations)
+```
+
+### Potential Biases to Watch For
+
+- **Genre over-dominance.** A genre match alone adds 2.0 points — the same as a near-perfect energy + danceability + acousticness trio. A song in the "wrong" genre that fits the user's vibe in every other way can easily be outranked by a genre match with mismatched energy. This means great cross-genre discoveries get buried.
+- **Mood is binary and coarse.** Two songs labeled "chill" are treated identically even if one is dreamy ambient and the other is laid-back hip-hop. The system cannot distinguish within a mood category.
+- **Continuous features assume a neutral default.** When a user does not specify `target_danceability` or `target_acousticness`, they default to 0.65 and 0.50 respectively. This quietly biases recommendations toward mid-range songs for those dimensions, which may not match every listener.
+- **Small catalog amplifies accidents.** With only 17 songs, a single genre (e.g., lofi or pop) having more entries than others means those genres appear more often in recommendations regardless of real fit — a popularity bias in miniature.
 
 ---
 
