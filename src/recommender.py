@@ -122,6 +122,7 @@ class Recommender:
         self.songs = songs
 
     def _score(self, user: UserProfile, song: Song) -> float:
+        """Apply the point-weighting recipe and return the total score for one song."""
         score = 0.0
         if song.genre == user.favorite_genre:
             score += WEIGHT_GENRE
@@ -133,10 +134,12 @@ class Recommender:
         return score
 
     def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
+        """Score all songs for the given user and return the top-k sorted by score."""
         scored = sorted(self.songs, key=lambda s: self._score(user, s), reverse=True)
         return scored[:k]
 
     def explain_recommendation(self, user: UserProfile, song: Song) -> str:
+        """Return a human-readable breakdown of why a song was recommended."""
         parts = []
 
         if song.genre == user.favorite_genre:
@@ -165,10 +168,7 @@ class Recommender:
 # ---------------------------------------------------------------------------
 
 def load_songs(csv_path: str) -> List[Dict]:
-    """
-    Loads songs from a CSV file into a list of dicts.
-    Required by src/main.py
-    """
+    """Read songs.csv and return a list of dicts with numeric fields cast to float/int."""
     songs = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -189,14 +189,7 @@ def load_songs(csv_path: str) -> List[Dict]:
 
 
 def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
-    """
-    Scores a single song against user preferences using the point-weighting recipe.
-    Required by recommend_songs() and src/main.py
-
-    user_prefs keys: "genre", "mood", "energy",
-                     optionally "danceability", "acousticness"
-    Returns: (total_score, list_of_reason_strings)
-    """
+    """Score one song against user preferences; return (total_score, reasons_list)."""
     score = 0.0
     reasons: List[str] = []
 
@@ -231,17 +224,10 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
 
 
 def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
-    """
-    Scores every song, ranks by score descending, returns the top-k.
-    Required by src/main.py
-
-    Returns a list of (song_dict, score, explanation_string) tuples.
-    """
-    scored = []
-    for song in songs:
-        score, reasons = score_song(user_prefs, song)
-        explanation = " | ".join(reasons)
-        scored.append((song, score, explanation))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:k]
+    """Score every song in the catalog and return the top-k as (song, score, explanation) tuples."""
+    scored = [
+        (song, score, " | ".join(reasons))
+        for song in songs
+        for score, reasons in [score_song(user_prefs, song)]
+    ]
+    return sorted(scored, key=lambda x: x[1], reverse=True)[:k]
