@@ -5,25 +5,30 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 # Point-weighting recipe
 # ---------------------------------------------------------------------------
-# +2.0  Genre match      (categorical, binary)
+# +1.5  Genre match      (categorical, binary)
 # +1.0  Mood match       (categorical, binary)
-# +1.5  Energy proximity (continuous: 1.5 × (1 − |song − target|))
+# +2.0  Energy proximity (continuous: 2.0 × (1 − |song − target|))
 # +0.5  Danceability proximity (continuous: 0.5 × (1 − |song − target|))
 # +0.5  Acousticness proximity (continuous: 0.5 × (1 − |song − target|))
 #
 # Maximum possible score = 5.5
 #
-# Rationale:
-#   Genre is the strongest signal (2.0) because listeners strongly identify
-#   with a genre.  Mood is meaningful but softer (1.0) — a "chill" song can
-#   still land in many moods.  Energy (1.5) is the most important continuous
-#   feature; it determines workout vs study feel.  Danceability and
-#   acousticness are tie-breakers at 0.5 each.
+# Rationale (revised):
+#   Genre is still a strong signal (1.5) but no longer dominant enough to
+#   override a poor continuous match.  Energy is now the top weight (2.0)
+#   because it most directly determines the listening feel (workout vs study).
+#   A song with near-perfect energy/danceability/acousticness alignment can
+#   now overturn a weak genre match — previously impossible when genre alone
+#   was worth 36 % of the max score.  Mood and tie-breaker weights unchanged.
+#
+# Previous weights: GENRE=2.0, ENERGY=1.5  →  genre share was 36 % of 5.5
+# Revised weights:  GENRE=1.5, ENERGY=2.0  →  genre share is  27 % of 5.5
+#                                              continuous share is 55 % of 5.5
 # ---------------------------------------------------------------------------
 
-WEIGHT_GENRE       = 2.0
+WEIGHT_GENRE       = 1.5
 WEIGHT_MOOD        = 1.0
-WEIGHT_ENERGY      = 1.5
+WEIGHT_ENERGY      = 2.0
 WEIGHT_DANCEABILITY = 0.5
 WEIGHT_ACOUSTICNESS = 0.5
 
@@ -60,10 +65,10 @@ class UserProfile:
     favorite_mood: str
     target_energy: float
     name: str = "User"
-    target_danceability: float = 0.65
+    target_danceability: float = 0.65   # default silently biases toward danceable songs (bias #8)
     target_acousticness: float = 0.50
-    target_tempo_bpm: float = 100.0
-    likes_acoustic: bool = True
+    target_tempo_bpm: float = 100.0     # loaded but never used in scoring (dead field — bias #6)
+    likes_acoustic: bool = True         # defined but never read in _score() (dead field — bias #5)
 
 
 # --- Example Taste Profiles ---
@@ -105,6 +110,67 @@ PROFILE_JAZZ_CAFE = UserProfile(
     target_danceability=0.55,
     target_acousticness=0.85,
 )
+
+
+# ---------------------------------------------------------------------------
+# KNOWN BIASES & FILTER BUBBLE ANALYSIS
+# ---------------------------------------------------------------------------
+#
+# 1. ENERGY DESERT (dataset gap 0.55 → 0.75)
+#    The catalog has NO songs between energy 0.55 and 0.75 — a gap of 0.20.
+#    A user targeting energy=0.65 can score at most:
+#      2.0 × (1 − 0.10) = 1.80 pts  (best available: Afternoon Daydream at 0.55)
+#    vs a user targeting energy=0.38:
+#      2.0 × (1 − 0.00) = 2.00 pts  (exact match: Late Night Pages)
+#    Medium-energy users are structurally disadvantaged — their best possible
+#    energy score is capped ~10 % below maximum through no fault of their prefs.
+#
+# 2. LOFI OVER-REPRESENTATION
+#    Genre counts: lofi=4, all others ≤2, hip-hop=1, classical=1.
+#    A lofi user has twice the variety and twice the chance of a genre+mood
+#    double-hit compared to a hip-hop or classical user, who are limited to
+#    a single song each and can never earn the genre bonus on anything else.
+#
+# 3. ARTIST ECHO CHAMBER (no diversity penalty)
+#    Neon Echo (3 songs) and Slow Stereo (3 songs) can occupy multiple slots
+#    in a user's top-5 simultaneously. The scorer has no artist-repeat penalty,
+#    so the same artist can sweep all 5 recommendations for some profiles.
+#
+# 4. SINGLE-OCCURRENCE MOODS ("confident", "peaceful", "melancholic")
+#    These moods each appear exactly once in the catalog. A user whose target
+#    mood is "confident" can earn the +1.0 mood bonus on at most one song,
+#    and that song (Gold Chain Manifesto, hip-hop) must also compete on all
+#    continuous dimensions. Effectively these users have mood scoring disabled.
+#
+# 5. DEAD FIELD — `likes_acoustic` (UserProfile)
+#    `likes_acoustic: bool` is defined on UserProfile but is NEVER read in
+#    `_score()` or `score_song()`. A user who sets `likes_acoustic=False` gets
+#    no benefit; highly acoustic songs are not penalised for them.
+#
+# 6. DEAD COLUMNS — `valence` and `tempo_bpm` (songs.csv)
+#    Both columns are loaded by `load_songs()` and stored in every song dict,
+#    but neither is passed to `_proximity()` in the scoring path. A user who
+#    prefers high-valence (uplifting) or specific-tempo (e.g., 180 BPM for
+#    running) music cannot express those preferences at all.
+#
+# 7. BINARY CATEGORICAL MATCHING (no semantic distance)
+#    Genre and mood are matched with exact string equality. "indie pop" and
+#    "pop" are treated as completely unrelated (0 pts) even though listeners
+#    routinely cross between them. "moody" and "melancholic" are equally
+#    distant. A genre taxonomy or mood adjacency matrix would fix this.
+#
+# 8. SILENT DEFAULT BIAS (danceability=0.65, energy=0.5)
+#    `score_song()` uses `user_prefs.get("danceability", 0.65)` — any profile
+#    that omits danceability is silently scored as if it prefers medium-high
+#    danceability. The dataset mean is ~0.62, so this subtly biases omitted
+#    profiles toward danceable songs. Same pattern for energy default of 0.5.
+#
+# 9. SYMMETRIC PROXIMITY (no directional preferences)
+#    `_proximity` treats energy=0.70 and energy=0.90 as equally close to a
+#    target of 0.80. There is no way to express "at least 0.8 energy" or
+#    "no more than 0.4 energy" — overshooting and undershooting are penalised
+#    identically regardless of listening context.
+# ---------------------------------------------------------------------------
 
 
 def _proximity(song_val: float, target_val: float, weight: float) -> float:
@@ -180,8 +246,8 @@ def load_songs(csv_path: str) -> List[Dict]:
                 "genre":        row["genre"],
                 "mood":         row["mood"],
                 "energy":       float(row["energy"]),
-                "tempo_bpm":    float(row["tempo_bpm"]),
-                "valence":      float(row["valence"]),
+                "tempo_bpm":    float(row["tempo_bpm"]),    # loaded, never scored (dead column — bias #6)
+                "valence":      float(row["valence"]),      # loaded, never scored (dead column — bias #6)
                 "danceability": float(row["danceability"]),
                 "acousticness": float(row["acousticness"]),
             })
